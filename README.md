@@ -3,3 +3,4 @@
 
 ![#Model architecture](assets/mistral.PNG)
 # To be continued
+Sliding window attention - KV-Cache - Rolling buffer cache - Rotary positional encoding - Prefill and chunking
