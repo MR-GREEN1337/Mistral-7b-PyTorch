@@ -8,3 +8,5 @@
 
 Sliding window attention  - Rolling buffer cache  - Prefill and chunking - FF - MoE - ResidualBlock
   
+# Big thanks for Mr. Umar Jamil for providing the necessay help to a thorough implementation
+https://www.youtube.com/watch?v=UiX8K-xBUpE
