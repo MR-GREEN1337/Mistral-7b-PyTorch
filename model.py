@@ -1,9 +1,10 @@
 import math
+from typing import Optional
+from dataclasses import dataclass
+
 import torch
 import torch.nn as nn
 import torch.nn.functional as F
-from dataclasses import dataclass
-from typing import Optional
 
 @dataclass
 class ModelArgs:
@@ -42,8 +43,9 @@ class Transformer(nn.Module):
         self.norm = RMSNorm(args)
         self.output = nn.Linear(args.d_model, self.vocab_size, bias=False)
 
-        self.freqs_complex = RotaryPostionalEncoding().compute_theta_params(self.args.d_model // self.args.n_heads, 
-                                                                            self.args.max_seq_len * 2, device=self.args.device)
+        self.freqs_complex = RotaryPostionalEncoding().compute_theta_params(
+                                                    self.args.d_model // self.args.n_heads, 
+                                                    self.args.max_seq_len * 2, device=self.args.device)
 
     def forward(self, tokens: torch.Tensor, start_pos: int):
         batch_size, seq_len = tokens.shape
@@ -171,7 +173,7 @@ class RotaryPostionalEncoding(nn.Module):
 class GQA(nn.Module):
     def __init__(self, args: ModelArgs):
         super().__init__()
-
+        self.args = args
         #Number of  K and V heads
         self.n_kv_heads = [args.n_kv_heads, args.n_heads][args.n_kv_heads is None]
         
@@ -200,8 +202,8 @@ class GQA(nn.Module):
         xk = xk.view(batch_size, seq_len, self.n_kv_heads, self.head_dim)
         xv = xv.view(batch_size, seq_len, self.n_kv_heads, self.head_dim)
 
-        xq = RotaryPostionalEncoding().apply_rotary_embeddings(xq, freq_complex, device=x.device)
-        xk = RotaryPostionalEncoding().apply_rotary_embeddings(xk, freq_complex, device=x.device)
+        xq = RotaryPostionalEncoding(self.args).apply_rotary_embeddings(xq, freq_complex, device=x.device)
+        xk = RotaryPostionalEncoding(self.args).apply_rotary_embeddings(xk, freq_complex, device=x.device)
 
         self.cache_k[:batch_size, start_pos:start_pos+seq_len] = xk
         self.cache_v[:batch_size, start_pos:start_pos+seq_len] = xv
@@ -210,8 +212,8 @@ class GQA(nn.Module):
         values = self.cache_v[:batch_size, :start_pos+seq_len]
         
         #Apply unrotation
-        keys = torch.cat([GQA().unrotate(self.cache_k[i, :, :, :] for i in range(self.cache_k.shape[0]))], dim=0)
-        value = torch.cat([GQA().unrotate(self.cache_v[i, :, :, :] for i in range(self.cache_v.shape[0]))], dim=0)
+        keys = torch.cat([GQA(self.args).unrotate(keys[i, :, :, :] for i in range(keys.shape[0]))], dim=0)
+        values = torch.cat([GQA(self.args).unrotate(values[i, :, :, :] for i in range(values.shape[0]))], dim=0)
 
         # repeat k/v heads if n_kv_heads < n_heads
         # make the number of heads in kv and q the same
