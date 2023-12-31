@@ -138,6 +138,10 @@ class GQA(nn.Module):
         keys = self.cache_k[:batch_size, :start_pos+seq_len]
         values = self.cache_v[:batch_size, :start_pos+seq_len]
         
+        #Apply unrotation
+        keys = torch.cat([GQA().unrotate(self.cache_k[i, :, :, :] for i in range(self.cache_k.shape[0]))], dim=0)
+        value = torch.cat([GQA().unrotate(self.cache_v[i, :, :, :] for i in range(self.cache_v.shape[0]))], dim=0)
+
         # repeat k/v heads if n_kv_heads < n_heads
         # make the number of heads in kv and q the same
         keys = torch.repeat_interleave(keys, dim=2, repeats=self.n_rep)
@@ -157,8 +161,19 @@ class GQA(nn.Module):
 
         return self.wo(output)
     
-    def unrotate(cache: torch.Tensor, seq_len: int):
-        pass
+    '''    Unrotate the K and V sequence when it's saturated, unpluck the first element, 
+        shift to the last and put the element in queue last
+    '''
+    @staticmethod
+    def unrotate(cache: torch.Tensor, seq_len: int) -> torch.Tensor:
+        assert cache.ndim == 3, "Dimensionality problem"
+        position = seq_len % cache.shape[0]
+        if seq_len < cache.shape[0]:
+            return cache[:seq_len]
+        elif position == 0:
+            return cache
+        else:
+            return torch.cat([cache[position:], cache[:position]], dim=0)
 
     def sliding_window_attention(x: torch.Tensor, w: int):
         pass
