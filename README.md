@@ -2,8 +2,9 @@
 - Implementation of Mistral 7b using PyTorch
 
 ![#Model architecture](assets/mistral.PNG)
-# To be continued
-Sliding window attention - KV-Cache - Rolling buffer cache - Rotary positional encoding - Prefill and chunking
 
 ![# Model params](assets/params.PNG)
 - Look at the model params
+
+Sliding window attention  - Rolling buffer cache  - Prefill and chunking - FF - MoE - 
+  
