@@ -1,6 +1,7 @@
 import math
 import torch
 import torch.nn as nn
+import torch.nn.functional as F
 from dataclasses import dataclass
 from typing import Optional
 
@@ -8,11 +9,15 @@ from typing import Optional
 class ModelArgs:
     d_model: int = 4096
     n_layers: int = 32
+    head_dim: int = 128
+    hidden_dim: int = 14336
     n_heads: int = 32
-    n_kv_heads: Optional[int] = None
-    vocab_size: int = -1
-    multiple_of: int = 256
-    ffn_dim_multiplier: Optional[float] = None
+    n_kv_heads: int = 8
+    window_size: int = 4096
+    context_len: int = 8192
+    vocab_size: int = 32000
+    num_of_experts_per_tok: Optional[int] = None
+    num_experts: Optional[int] = None
     norm_eps: float = 1e-5
 
     # Needed for the KV cache
@@ -47,14 +52,15 @@ class RMSNorm(nn.Module):
         assert self.p != 0, "What do you want me to calculate! p!=0"
 
     def forward(self, x):
+        criterion = self.p**2 <= 1 and self.p > 0
         d_choice = [self.d_model, int(self.d_model * self.p)]
-        d_x = d_choice[0 if self.p**2 <= 1 and self.p > 0 else 1]
+        d_x = d_choice[criterion]
 
-        if self.p**2 <= 1 and self.p > 0:
+        if criterion:
             norm_x, _ = torch.split(x, [d_x, self.d_model - d_x], dim=-1)
 
         norm_x = x.norm(2, dim=-1, keepdim=True)
-        norm_x *= math.sqrt(d_x)
+        norm_x /= math.sqrt(d_x)
 
         x /= norm_x
 
@@ -66,16 +72,17 @@ class RotaryPostionalEncoding(nn.Module):
         self.d_model = args.d_model
 
     @staticmethod
-    def compute_theta_params(d_model: int, end: int, theta: float = 10000.):
+    def compute_theta_params(d_model: int, seq_len: int, device: str, theta: float = 10000.):
         assert d_model % 2 ==0, "can't use an odd dimension!"
         
         freqs = 1.0 / (theta ** (torch.arange(0, d_model, 2)[: (d_model // 2)].float() / d_model))
-        t = torch.arange(end, device=freqs.device)
+        t = torch.arange(seq_len, device=freqs.device)
         # Calculate m * theta_i
         freqs = torch.outer(t, freqs).float()  # type: ignore
         freqs_cisp = torch.polar(torch.ones_like(freqs), freqs)  # we don't care about the scalars for now, we set them to 1
         return freqs_cisp
-    
+
+    @staticmethod
     def apply_rotary_embeddings(x: torch.Tensor, freq_complex: torch.Tensor, device: str):
         x_complex = torch.view_as_complex(x.float().reshape(*x.shape[:-1], -1, 2))
         freq_complex = freq_complex.unsqueeze(0).unsqueeze(2)
@@ -85,9 +92,8 @@ class RotaryPostionalEncoding(nn.Module):
 
         return x_out.type_as(x).to(device)
 
-    def forward(self, x):
-        R = torch.zeros(2, self.d_model)
-        R += x*torch.cos(compute_theta_params(self.d_model, ))
+    def forward(self):
+        pass 
 
 
 
@@ -112,5 +118,41 @@ class GQA(nn.Module):
         self.cache_k = torch.zeros((args.max_batch_size, args.max_seq_len, self.n_kv_heads, self.head_dim))
         self.cache_v = torch.zeros((args.max_batch_size, args.max_seq_len, self.n_kv_heads, self.head_dim))
 
-        def forward(self, x: torch.Tensor, start_pos: int, freq_complex: torch.Tensor):
-            pass
+    def forward(self, x: torch.Tensor, start_pos: int, freq_complex: torch.Tensor):
+        batch_size, seq_len, _ = x.shape
+
+        xq = self.wq(x)
+        xk = self.wk(x)
+        xv = self.wv(x)
+
+        xq = xq.view(batch_size, seq_len, self.n_heads_q, self.head_dim)
+        xk = xk.view(batch_size, seq_len, self.n_kv_heads, self.head_dim)
+        xv = xv.view(batch_size, seq_len, self.n_kv_heads, self.head_dim)
+
+        xq = RotaryPostionalEncoding().apply_rotary_embeddings(xq, freq_complex, device=x.device)
+        xk = RotaryPostionalEncoding().apply_rotary_embeddings(xk, freq_complex, device=x.device)
+
+        self.cache_k[:batch_size, start_pos:start_pos+seq_len] = xk
+        self.cache_v[:batch_size, start_pos:start_pos+seq_len] = xv
+
+        keys = self.cache_k[:batch_size, :start_pos+seq_len]
+        values = self.cache_v[:batch_size, :start_pos+seq_len]
+        
+        # repeat k/v heads if n_kv_heads < n_heads
+        # make the number of heads in kv and q the same
+        keys = torch.repeat_interleave(keys, dim=2, repeats=self.n_rep)
+        values = torch.repeat_interleave(values, dim=2, repeats=self.n_rep)
+
+        # Self-attention
+        xq = xq.transpose(1, 2) # (batch_size, n_local_heads, seqlen, head_dim)
+
+        keys = keys.transpose(1, 2) # (batch_size, n_local_heads, cache_len + seqlen, head_dim)
+        values = values.transpose(1, 2) # (batch_size, n_local_heads, cache_len + seqlen, head_dim)
+
+        scores = torch.matmul(xq, keys.transpose(2, 3)) / math.sqrt(self.head_dim)
+        scores = F.softmax(scores.float(), dim=-1).type_as(xq)
+
+        output = torch.matmul(scores, values)  # (batch_size, n_local_heads, seq_len, head_dim)
+        output = output.transpose(1, 2).contiguous().view(batch_size, seq_len, -1)
+        
+        return self.wo(output)
