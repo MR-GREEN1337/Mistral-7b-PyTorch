@@ -89,7 +89,8 @@ class EncoderBlock(nn.Module):
         # (batch_dim, seq_len, d_model) + (batch_dim, seq_len, d_model) --> (batch_dim, seq_len, d_model)
         h = x + self.attention.forward(self.normalizer(x), start_pos, freqs_complex)
         out = h + self.ff.forward(self.normalizer(h))
-        
+        # The two residual blocks are added above
+
         return out
 
 class FF(nn.Module):
@@ -176,7 +177,7 @@ class GQA(nn.Module):
         self.args = args
         #Number of  K and V heads
         self.n_kv_heads = [args.n_kv_heads, args.n_heads][args.n_kv_heads is None]
-        
+
         #Number of  Q heads
         self.n_heads_q = args.n_heads
 
