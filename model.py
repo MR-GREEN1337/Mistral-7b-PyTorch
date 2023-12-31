@@ -26,6 +26,39 @@ class ModelArgs:
 
     device: str = None
 
+class Transformer(nn.Module):
+    def __init__(self, args:ModelArgs) -> None:
+        super().__init__()
+
+        assert args.vocab_size != 1, "What do you want me to train on!"
+        self.args = args
+        self.vocab_size = args.vocab_size
+        self.n_layers = args.n_layers
+        self.tok_embeddings = nn.Embedding(self.vocab_size, args.d_model)
+
+        self.layers = nn.ModuleList()
+        [self.layers.append(EncoderBlock(args) for _ in range(args.n_layers))]
+
+        self.norm = RMSNorm(args)
+        self.output = nn.Linear(args.d_model, self.vocab_size, bias=False)
+
+        self.freqs_complex = RotaryPostionalEncoding().compute_theta_params(self.args.d_model // self.args.n_heads, 
+                                                                            self.args.max_seq_len * 2, device=self.args.device)
+
+    def forward(self, tokens: torch.Tensor, start_pos: int):
+        batch_size, seq_len = tokens.shape
+        assert seq_len == 1, "Only one token could be processed at a time"
+
+        # (batch_size, seq_len) -> (batch_size, seq_len, d_model)
+        h = self.tok_embeddings(tokens)
+
+        freqs_complex = self.freqs_complex[start_pos:start_pos + seq_len]
+
+        # Apply all the encode layers
+        for layer in self.layers:
+            h = layer(h, start_pos, freqs_complex)
+        h = self.norm(h)
+
 class InputEmbeddings(nn.Module):
     def __init__(self, d_model: int, vocab_size: int) -> None:
         super().__init__()
@@ -36,6 +69,44 @@ class InputEmbeddings(nn.Module):
     def forward(self, x):
         return self.embedding(x) * math.sqrt(self.d_model) # Multiply by sqrt(d_model) to increase variance which tends to decrease
 
+class EncoderBlock(nn.Module):
+    def __init__(self, args: ModelArgs):
+        super().__init__()
+
+        self.n_heads = args.n_heads
+        self.d_model = args.d_model
+        self.head_dim = self.d_model // self.n_heads
+
+        self.attention = GQA(args)
+        self.ff = FF(args)
+
+        #Normalizing
+        self.normalizer = RMSNorm(args)
+
+    def forward(self, x: torch.Tensor, start_pos: int, freqs_complex: torch.Tensor):
+        # (batch_dim, seq_len, d_model) + (batch_dim, seq_len, d_model) --> (batch_dim, seq_len, d_model)
+        h = x + self.attention.forward(self.normalizer(x), start_pos, freqs_complex)
+        out = h + self.ff.forward(self.normalizer(h))
+        
+        return out
+
+class FF(nn.Module):
+    def __init__(self, args: ModelArgs):
+        super().__init__()
+        
+        self.hidden_dim = args.hidden_dim
+        
+        self.w1 = nn.Linear(args.d_model, self.hidden_dim, bias=False)
+        self.w2 = nn.Linear(args.hidden_dim, self.d_model, bias=False)
+        self.w3 = nn.Linear(args.d_model, self.hidden_dim, bias=False)
+
+    def forward(self, x: torch.Tensor):
+        silu = F.silu(self.w1(x))
+        x_V = self.w3(x)
+        x = silu * x_V
+        x = self.w2(x)
+        
+        return x
 
 '''
 We use RMSNorm instead of Layer Normalization for computational efficiency
