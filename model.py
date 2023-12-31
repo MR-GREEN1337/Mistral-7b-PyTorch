@@ -19,10 +19,10 @@ class ModelArgs:
     num_of_experts_per_tok: Optional[int] = None
     num_experts: Optional[int] = None
     norm_eps: float = 1e-5
-
+    p_RMSNorm: float = -1.
     # Needed for the KV cache
     max_batch_size: int = 32
-    max_seq_len: int = 2048
+    max_seq_len: int = 2048 # For the rolling buffer part
 
     device: str = None
 
@@ -42,12 +42,12 @@ We use RMSNorm instead of Layer Normalization for computational efficiency
 
 '''
 class RMSNorm(nn.Module):
-    def __init__(self, d_model: int, p: float = -1., eps: float = 1e-8):
+    def __init__(self, args: ModelArgs):
         super().__init__()
-        self.d_model = d_model
-        self.gamma = nn.Parameter(torch.ones(d_model))
-        self.p = p
-        self.eps = eps
+        self.d_model = args.d_model
+        self.gamma = nn.Parameter(torch.ones(self.d_model))
+        self.p = args.p_RMSNorm
+        self.eps = args.norm_eps
 
         assert self.p != 0, "What do you want me to calculate! p!=0"
 
@@ -154,5 +154,11 @@ class GQA(nn.Module):
 
         output = torch.matmul(scores, values)  # (batch_size, n_local_heads, seq_len, head_dim)
         output = output.transpose(1, 2).contiguous().view(batch_size, seq_len, -1)
-        
+
         return self.wo(output)
+    
+    def unrotate(cache: torch.Tensor, seq_len: int):
+        pass
+
+    def sliding_window_attention(x: torch.Tensor, w: int):
+        pass

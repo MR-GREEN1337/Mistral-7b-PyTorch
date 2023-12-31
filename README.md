@@ -6,5 +6,5 @@
 ![# Model params](assets/params.PNG)
 - Look at the model params
 
-Sliding window attention  - Rolling buffer cache  - Prefill and chunking - FF - MoE - 
+Sliding window attention  - Rolling buffer cache  - Prefill and chunking - FF - MoE - ResidualBlock
   
